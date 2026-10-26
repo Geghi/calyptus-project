@@ -92,6 +92,8 @@ No labels exist; the last column is my own read.
 
 Haiku and Sonnet agree on 9/10; the only split is N09. Haiku's low confidence on N10 ("could be a how-to question") is over-cautious but harmless: it goes to a human.
 
+The flag misses N09: the one ticket the two models disagree on, and Haiku's own reason says "it could also be read as Account Access", yet its confidence (0.72) sits just above the 0.7 threshold, so it is not flagged. N08 (0.75) is similar. A 0.8 threshold would catch both, but tuning it on these 10 tickets would leak the only unseen set; this is what the calibration step below is for.
+
 ### Haiku vs Sonnet (same final prompt)
 
 | | Haiku 5.5 | Sonnet 5.5 |
