@@ -1,0 +1,41 @@
+ticket_id,text,label
+T001,"I was charged twice for my October subscription, can you refund one?",Billing
+T002,The rota page shows a blank screen after I click Publish.,Bug
+T003,"Can't log in, it says my password is wrong but I just reset it.",Account Access
+T004,Would love a way to export the rota to Google Calendar.,Feature Request
+T005,"Please update my card, new one is 4111 1111 1111 1111 exp 09/28.",Billing
+T006,We're closing two sites so I need to cancel those locations.,Cancellation
+T007,My login link keeps expiring before I can use it.,Account Access
+T008,Invoice shows 14 locations but we only have 12.,Billing
+T009,App crashes on Android when I swap a shift.,Bug
+T010,Can we have different pay rates for weekend shifts?,Feature Request
+T011,I want to cancel our plan at the end of this month.,Cancellation
+T012,Locked out after 3 attempts. Reach me on sarah.jones@gmail.com or 07700 900123.,Account Access
+T013,Shift reminders are being sent an hour late since the clocks changed.,Bug
+T014,Is there a discount for annual billing?,Billing
+T015,"You charged us twice again this month, we want to cancel and get a refund.",Cancellation
+T016,"Please add a dark mode, the screen is too bright at night.",Feature Request
+T017,My manager removed me and now I can't access my schedule.,Account Access
+T018,The total hours on the timesheet report are wrong for night shifts.,Bug
+T019,Can you add a feature to cancel a shift swap request?,Cancellation
+T020,"We're switching to another provider, how do I close the account?",Cancellation
+T021,VAT is missing from our last invoice.,Billing
+T022,Two-factor code never arrives by SMS.,Account Access
+T023,It would be great to see labour cost as a % of sales.,Feature Request
+T024,"Staff can see each other's pay rates, that shouldn't happen.",Bug
+T025,How do I change the email address on our account?,Account Access
+T026,Clock-in button does nothing on iPad Safari.,Bug
+T027,"Please send the refund cheque to 14 Mill Lane, Leeds LS1 4AB.",Billing
+T028,"Not using it enough to justify the cost, please cancel.",Cancellation
+T029,Could the app suggest who to call in when someone is sick?,Feature Request
+T030,After your update yesterday nobody at our Bristol site can log in.,Bug
+T031,Card payment failed but the money left our account.,Billing
+T032,Add an option to set maximum weekly hours per employee.,Feature Request
+T033,The schedule export to PDF cuts off the last column.,Feature Request
+T034,"Forgot which email I signed up with, can you help me get in?",Account Access
+T035,"Please stop the auto-renewal, we're done after this term.",Cancellation
+T036,Holiday requests disappear after approval.,Bug
+T037,Can we pay by bank transfer instead of card?,Billing
+T038,SSO with Microsoft would help our head office team.,Feature Request
+T039,Our account was suspended but we paid on time.,Account Access
+T040,Can I downgrade to fewer locations instead of cancelling?,Billing
