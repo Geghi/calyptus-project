@@ -113,11 +113,26 @@ Metrics are computed by hand, no sklearn.
 
 ### Code and tests
 
-- Single module `classify.py` with two commands, `evaluate` and `predict`.
+- Single module `classify.py` with two commands, `evaluate` and `predict`, plus the `app/` package for the HTTP API.
 - TDD with pytest; tests replace the `claude -p` call with a fake, so they run without the CLI.
   Covered: PII masking, parsing the CLI JSON, the `needs_human` rule, the metrics, CSV output.
 - One real smoke test against `claude -p`; it is billed, so it runs only with `RUN_LIVE=1` and `claude` on PATH.
-- Dependencies: `tenacity`; `pytest` (dev).
+- Dependencies: `tenacity`, `fastapi[standard]`; `pytest` (dev).
+
+## HTTP API
+
+A FastAPI service exposes the same classification path as `predict` (`app/`): every ticket goes through `run_classification`, so PII is masked before the model sees it and transient failures are retried.
+Run with `uv run fastapi dev app/main.py`; interactive docs at `/docs`.
+
+- `GET /health` → `{"status": "ok"}`.
+- `POST /classify` `{ticket_id?, text}` → `{ticket_id, category, confidence, needs_human, reason}`; the ticket text, masked or not, is never returned.
+  Text is 1–5000 characters, otherwise 422.
+  A classification failure returns 502 with a generic message; the raw error is only logged.
+- `POST /classify/batch` `{tickets: [...]}` (1–100 tickets) → `{predictions: [...]}`, in input order, classified 5 in parallel by `classify_all`, the same pool as `predict`.
+  A failed ticket comes back with `category` and `confidence` null, `needs_human=true` and reason "classification failed"; the batch still succeeds.
+- Endpoints are plain `def`, so the blocking `claude -p` call runs in FastAPI's threadpool.
+- The `claude -p` call is injected with `Depends(get_call)`; tests override it with a fake, so masking, retries and the `needs_human` rule still run.
+- Out of scope: auth (required before exposing beyond localhost), a settings module, Docker.
 
 ## README content
 

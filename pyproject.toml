@@ -3,6 +3,7 @@ name = "shiftwise-classifier"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
+    "fastapi[standard]>=0.162.0",
     "tenacity>=9.2.1",
 ]
 
