@@ -52,6 +52,7 @@ def test_classify_parses_recorded_real_response():
     recorded = json.loads((FIXTURES / "claude_response.json").read_text())
     result = classify.classify("t", call=lambda text: recorded)
     assert result == {
+        "text_redacted": "t",
         "category": "Billing",
         "confidence": 0.97,
         "needs_human": True,
@@ -420,3 +421,53 @@ def test_smoke_real_claude():
     result = classify.classify("I was charged twice this month, please refund one payment.")
     assert result["category"] in classify.CATEGORIES
     assert 0 <= result["confidence"] <= 1
+
+
+@pytest.mark.parametrize(
+    "raw, masked",
+    [
+        (
+            "Please update my card, new one is 4111 1111 1111 1111 exp 09/28.",
+            "Please update my card, new one is [CARD] exp 09/28.",
+        ),
+        ("card 4111-1111-1111-1111 please", "card [CARD] please"),
+        (
+            "Locked out after 3 attempts. Reach me on sarah.jones@gmail.com or 07700 900123.",
+            "Locked out after 3 attempts. Reach me on [EMAIL] or [PHONE].",
+        ),
+        ("call +44 7700 900123 now", "call [PHONE] now"),
+        ("call 020 7946 0958 now", "call [PHONE] now"),
+        ("Invoice shows 14 locations but we only have 12.", "Invoice shows 14 locations but we only have 12."),
+        ("Shift reminders are an hour late, 1 hour, 3 attempts.", "Shift reminders are an hour late, 1 hour, 3 attempts."),
+        ("The total hours on the timesheet report are wrong for night shifts.", "The total hours on the timesheet report are wrong for night shifts."),
+    ],
+)
+def test_mask_pii(raw, masked):
+    assert classify.mask_pii(raw) == masked
+
+
+def test_classify_sends_masked_text_to_the_call_and_returns_it():
+    seen = []
+
+    def fake(text):
+        seen.append(text)
+        return cli_result()
+
+    result = classify.classify("mail sarah.jones@gmail.com", call=fake)
+    assert seen == ["mail [EMAIL]"]
+    assert result["text_redacted"] == "mail [EMAIL]"
+
+
+def test_predict_writes_masked_text_for_success_and_failed_rows(tmp_path):
+    source = tmp_path / "in.csv"
+    out = tmp_path / "out.csv"
+    write_tickets(source, [["T1", "ring 07700 900123"], ["T2", "mail a@b.co"]])
+
+    def fake(text):
+        if "[EMAIL]" in text:
+            raise classify.ClassifyError("boom")
+        return cli_result()
+
+    classify.predict(source, out, call=fake, wait=wait_none())
+    rows = read_rows(out)
+    assert [r["text_redacted"] for r in rows] == ["ring [PHONE]", "mail [EMAIL]"]

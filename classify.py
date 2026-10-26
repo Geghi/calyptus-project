@@ -1,5 +1,6 @@
 import csv
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,11 @@ TOKEN_KEYS = (
 )
 BACKOFF = wait_exponential_jitter(initial=1, max=30, jitter=1)
 DEFAULT_OUTPUT = Path("results/predictions_new.csv")
+PII_PATTERNS = [
+    (re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"), "[EMAIL]"),
+    (re.compile(r"\b\d(?:[ -]?\d){12,18}\b"), "[CARD]"),
+    (re.compile(r"(?<!\w)(?:\+|0)\d(?:[ -]?\d){8,13}(?!\w)"), "[PHONE]"),
+]
 OUTPUT_COLUMNS = [
     "ticket_id",
     "text_redacted",
@@ -93,6 +99,7 @@ class Outcome:
     tokens: int = 0
     prediction: dict | None = None
     error: str | None = None
+    text_redacted: str = ""
 
 
 def looks_transient(message):
@@ -162,8 +169,15 @@ def usage_tokens(response):
     return sum(usage.get(key, 0) for key in TOKEN_KEYS)
 
 
+def mask_pii(text):
+    for pattern, token in PII_PATTERNS:
+        text = pattern.sub(token, text)
+    return text
+
+
 def run_classification(text, call=call_claude, wait=BACKOFF):
-    outcome = Outcome()
+    text = mask_pii(text)
+    outcome = Outcome(text_redacted=text)
 
     def attempt():
         response = call(text)
@@ -195,11 +209,11 @@ def classify(text, call=call_claude, wait=BACKOFF):
     outcome = run_classification(text, call=call, wait=wait)
     if outcome.error is not None:
         raise ClassifyError(outcome.error)
-    return {**outcome.prediction, "cost": outcome.cost, "tokens": outcome.tokens}
+    return {**outcome.prediction, "text_redacted": outcome.text_redacted, "cost": outcome.cost, "tokens": outcome.tokens}
 
 
 def classify_row(ticket, call, wait):
-    row = {"ticket_id": ticket["ticket_id"], "text_redacted": ticket["text"]}
+    row = {"ticket_id": ticket["ticket_id"], "text_redacted": mask_pii(ticket["text"])}
     try:
         outcome = run_classification(ticket["text"], call=call, wait=wait)
     except Exception as error:

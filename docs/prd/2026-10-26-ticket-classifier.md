@@ -69,8 +69,10 @@ The 0.7 threshold is tuned after the first evaluation run, from how confidence l
 
 ### PII
 
-- Before text reaches the model, a regex masks card numbers, email addresses and phone numbers.
-- The masked text is what is written to output CSVs.
+- `mask_pii` replaces card numbers (13–19 digits, space or dash separators) with `[CARD]`, email addresses with `[EMAIL]`, and phone numbers starting with `0` or `+` (9–14 digits, e.g. `07700 900123`, `+44 …`) with `[PHONE]`.
+- It runs inside `run_classification`, so every caller sends only masked text to the model; `classify()` returns it as `text_redacted`.
+- The masked text is what is written to `text_redacted` in output CSVs, FAILED rows included.
+- Plain small numbers ("14 locations", "3 attempts") are left alone; a phone number with neither a leading `0` nor `+` is missed.
 - Known gap, stated in the README: postal addresses and names are not caught; a proper anonymization step is required before going live.
 
 ### Labels
