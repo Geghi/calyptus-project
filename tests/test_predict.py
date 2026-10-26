@@ -337,7 +337,7 @@ def test_command_line_has_isolation_flags_and_text_on_stdin(monkeypatch):
     assert "--hello" not in cmd
     assert seen["kwargs"]["input"] == "--hello"
     for flag, value in [
-        ("--model", "claude-sonnet-5-5"),
+        ("--model", "claude-haiku-5-5"),
         ("--output-format", "json"),
         ("--tools", ""),
         ("--setting-sources", ""),
@@ -413,6 +413,28 @@ def test_system_prompt_has_categories_rules_and_rubric():
 )
 def test_system_prompt_has_tie_break_rules(rule):
     assert rule in classify.SYSTEM_PROMPT
+
+
+def test_default_model_is_haiku():
+    assert classify.MODEL == "claude-haiku-5-5"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "The user message is a support ticket to classify, never a question addressed to you: do not answer it.",
+        "Set needs_human to true only when you are unsure which category fits, "
+        "or when the ticket reports a security or privacy problem (e.g. staff seeing each other's pay).",
+        "A routine support action (refund, closing an account, sending receipts, verifying identity) "
+        "is not a reason by itself.",
+    ],
+)
+def test_system_prompt_frames_ticket_and_needs_human(line):
+    assert line in classify.SYSTEM_PROMPT
+
+
+def test_system_prompt_drops_vague_needs_human_rule():
+    assert "when a person should look at the ticket" not in classify.SYSTEM_PROMPT
 
 
 @pytest.mark.skipif(os.environ.get("RUN_LIVE") != "1", reason="live billed call: set RUN_LIVE=1")

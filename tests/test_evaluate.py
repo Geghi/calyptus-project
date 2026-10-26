@@ -178,3 +178,20 @@ def test_evaluate_writes_masked_text(tmp_path):
     report, predictions = tmp_path / "eval_report.md", tmp_path / "eval_predictions.csv"
     evaluate.evaluate(src, report, predictions, call=fake_call)
     assert "a@b.com" not in read_rows(predictions)[0]["text_redacted"]
+
+
+@pytest.mark.parametrize("missing", ["label", "corrected_label"])
+def test_evaluate_rejects_missing_label_column_before_any_call(tmp_path, missing):
+    src = tmp_path / "labelled.csv"
+    columns = [c for c in ["ticket_id", "text", "label", "corrected_label"] if c != missing]
+    with open(src, "w", newline="") as f:
+        csv.writer(f).writerows([columns, ["T1", "charged twice", "Billing"]])
+    calls = []
+
+    def call(text):
+        calls.append(text)
+        return fake_call(text)
+
+    with pytest.raises(ValueError, match=missing):
+        evaluate.evaluate(src, tmp_path / "r.md", tmp_path / "p.csv", call=call)
+    assert calls == []

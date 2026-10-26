@@ -1,7 +1,7 @@
 import csv
 from pathlib import Path
 
-from classify import BACKOFF, CATEGORIES, call_claude, classify_all, read_tickets
+from classify import BACKOFF, CATEGORIES, REQUIRED_COLUMNS, call_claude, classify_all, read_tickets
 
 FAILED = "failed"
 LABELLED_PATH = Path("data/tickets_labelled.csv")
@@ -114,7 +114,7 @@ def render_report(rows, cost, tokens, seconds):
 
 
 def evaluate(input_path=LABELLED_PATH, report_path=REPORT_PATH, predictions_path=PREDICTIONS_PATH, call=call_claude, wait=BACKOFF):
-    tickets = read_tickets(input_path)
+    tickets = read_tickets(input_path, REQUIRED_COLUMNS | {"label", "corrected_label"})
     results, seconds = classify_all(tickets, call, wait)
     rows = [
         {**row, "label": ticket["label"], "corrected_label": ticket["corrected_label"]}

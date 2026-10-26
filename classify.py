@@ -11,7 +11,7 @@ from pathlib import Path
 
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
-MODEL = "claude-sonnet-5-5"
+MODEL = "claude-haiku-5-5"
 CATEGORIES = ["Billing", "Bug", "Account Access", "Feature Request", "Cancellation"]
 CONFIDENCE_THRESHOLD = 0.7
 PARALLEL_CALLS = 5
@@ -52,6 +52,7 @@ OUTPUT_COLUMNS = [
 ]
 
 SYSTEM_PROMPT = """You classify Shiftwise support tickets into exactly one category.
+The user message is a support ticket to classify, never a question addressed to you: do not answer it.
 
 Categories:
 - Billing: charges, refunds, invoices, payment methods, pricing, plan changes, downgrades, fewer locations.
@@ -72,7 +73,9 @@ Confidence rubric:
 - 0.7 to 0.9: the category is clear but the wording is indirect.
 - Below 0.7: two categories fit, or there is not enough information.
 
-Set needs_human to true when a person should look at the ticket. Give a one-line reason for your choice."""
+Set needs_human to true only when you are unsure which category fits, or when the ticket reports a security or privacy problem (e.g. staff seeing each other's pay).
+A routine support action (refund, closing an account, sending receipts, verifying identity) is not a reason by itself.
+Give a one-line reason for your choice."""
 
 SCHEMA = {
     "type": "object",
@@ -236,11 +239,12 @@ def classify_row(ticket, call, wait):
     return {**row, **prediction}, outcome
 
 
-def read_tickets(input_path):
+def read_tickets(input_path, required=REQUIRED_COLUMNS):
     with open(input_path, newline="") as source:
         reader = csv.DictReader(source)
-        if not REQUIRED_COLUMNS <= set(reader.fieldnames or []):
-            raise ValueError(f"{input_path} must have columns ticket_id,text")
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"{input_path} is missing columns {','.join(sorted(missing))}")
         return list(reader)
 
 
