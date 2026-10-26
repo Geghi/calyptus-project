@@ -2,8 +2,8 @@
 
 ## Layers
 
-No stack yet: runners, commands and folders are filled in when the spec picks the stack.
-For now only unit tests: integration and E2E are added when a ticket needs them.
+pytest, tests in `tests/`; the `claude -p` call is replaced with a fake, so unit tests need no CLI.
+Integration and E2E are added when a ticket needs them.
 
 | Layer       | Command | Needs |
 | ----------- | ------- | ----- |

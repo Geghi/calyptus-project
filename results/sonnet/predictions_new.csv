@@ -1,0 +1,11 @@
+ticket_id,text_redacted,predicted_category,confidence,needs_human,reason
+N01,We were billed for a location we closed in August.,Billing,0.93,False,"Customer was charged for a location closed in August, which is a billing charge dispute and likely refund request."
+N02,Password reset email goes to an old address I no longer have.,Account Access,0.93,False,"User cannot reset their password because the reset email goes to an old address they no longer access, which is a login/password access issue."
+N03,The rota doesn't load at all on Firefox.,Bug,0.95,False,"The rota is an existing feature that fails to load on Firefox, which is broken behavior."
+N04,Please let staff swap shifts without manager approval.,Feature Request,0.8,False,"User asks for shift swaps without manager approval, a capability/setting change that appears not to exist yet, rather than something broken."
+N05,"Cancel everything please, my business has been sold.",Cancellation,0.96,False,"User wants to cancel everything because their business was sold, which is clear intent to leave the service entirely."
+N06,"Send receipts to [EMAIL], my number is [PHONE].",Billing,0.72,False,"Request to send receipts relates to payment documentation, a routine billing action; wording is brief and indirect."
+N07,Shifts I delete keep coming back the next day.,Bug,0.93,False,"Deleting shifts is an existing feature that behaves wrongly, since deleted shifts reappear the next day."
+N08,Can I pause our subscription over winter rather than cancel?,Billing,0.62,True,"Asks about pausing a subscription instead of cancelling; this is a plan change (Billing) but could be Cancellation or a Feature Request if pausing isn't offered, so it's ambiguous."
+N09,New starters can't create a login from the invite email.,Account Access,0.78,False,"New users can't create a login from the invite email, which is an account access/sign-up problem; could be a bug in the invite link, but the stated symptom is getting into the account."
+N10,It'd be useful to see who's approaching overtime this week.,Feature Request,0.72,False,"User wants a view of who is approaching overtime this week, which reads as a request for an overtime-tracking report/alert that likely doesn't exist yet."

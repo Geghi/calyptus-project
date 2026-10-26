@@ -1,0 +1,11 @@
+ticket_id,text_redacted,predicted_category,confidence,needs_human,reason
+N01,We were billed for a location we closed in August.,Billing,0.92,False,"The customer is disputing a charge for a location they closed, which is a billing issue about charges tied to locations count."
+N02,Password reset email goes to an old address I no longer have.,Account Access,0.92,False,"The ticket is about being unable to reset a password because the reset email goes to an outdated address, which is a password/login access issue."
+N03,The rota doesn't load at all on Firefox.,Bug,0.92,False,"An existing feature (the rota) fails to load in Firefox, which is broken behavior rather than a request for something new."
+N04,Please let staff swap shifts without manager approval.,Feature Request,0.93,False,The ticket asks for a capability that does not exist yet: letting staff swap shifts without manager approval.
+N05,"Cancel everything please, my business has been sold.",Cancellation,0.93,False,"The customer clearly asks to cancel everything because the business was sold, which is intent to leave the service entirely."
+N06,"Send receipts to [EMAIL], my number is [PHONE].",Billing,0.85,False,"The ticket asks for receipts to be sent, which is a billing/invoice request; the phone number is just contact info and no security or privacy issue is reported."
+N07,Shifts I delete keep coming back the next day.,Bug,0.9,False,"Deleted shifts reappearing the next day means an existing feature is behaving incorrectly, so this is a bug."
+N08,Can I pause our subscription over winter rather than cancel?,Billing,0.75,False,"The customer asks whether they can pause their subscription instead of cancelling, which is a subscription/plan change question with no intent to leave the service."
+N09,New starters can't create a login from the invite email.,Bug,0.72,False,"The existing invite-email login creation flow is malfunctioning for new starters, which fits Bug under the ""exists but is broken"" rule, though it could also be read as Account Access."
+N10,It'd be useful to see who's approaching overtime this week.,Feature Request,0.4,True,"Not a clear support issue: the message asks for a view of who is nearing overtime this week, which may be a report or capability Shiftwise doesn't offer, so it's unclear whether it's a feature request or a how-to question."

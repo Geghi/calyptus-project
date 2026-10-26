@@ -22,7 +22,8 @@ v1 sorts each ticket automatically into one of five categories: **Billing**, **B
 ### Model and transport
 
 - Python, `uv` project.
-- Calls Claude **Sonnet 5.5** through the `claude -p` CLI (current subscription), not the Anthropic API.
+- Calls Claude **Haiku 5.5** (`claude-haiku-5-5`, `MODEL` in `classify.py`) through the `claude -p` CLI (current subscription), not the Anthropic API.
+  Haiku matched Sonnet 5.5 on every metric with the same prompt at ~1/16 of the cost; the Sonnet comparison is kept in `results/sonnet/`.
   Switching to the API is a later step if time allows.
 - Structured output via `--json-schema`; the result is read from `structured_output` in `--output-format json`.
 - Each call is isolated: `--tools ""`, `--setting-sources ""`, `--no-session-persistence`, our own `--system-prompt`, run from a scratch working directory, so no repo instructions, hooks or plugins leak into the classifier.
@@ -36,12 +37,13 @@ v1 sorts each ticket automatically into one of five categories: **Billing**, **B
   An unexpected error on one ticket (e.g. a malformed response) is not retried: that ticket gets a failed row with a generic reason, the raw error goes to stderr, and the run continues.
   Transience is decided by `api_error_status` when present; text markers apply only when there is no status or the error comes from stderr.
   The printed cost and tokens include every attempt that returned JSON, retries and failures too.
-- Measured on one call: ~3.7 s, ~$0.0054 list price; ~$0.27 for all 50 tickets.
+- Measured on the final runs (notional list price): Haiku $0.0139 for all 50 tickets, Sonnet $0.2182.
 
 ### Prompt
 
 - **Zero-shot**: the labelled tickets are never put in the prompt, so evaluating on them is not leaked.
   Caveat for the README: the definitions were written after reading the 40 tickets, a mild leak a fresh labelled set would remove.
+- The ticket is framed as data: the prompt says the user message is a ticket to classify, never a question to answer.
 - One written definition per category, plus tie-break rules:
   - intent to leave the service entirely, or stop renewal → **Cancellation**;
   - fewer locations / downgrade / plan change → **Billing**;
@@ -55,7 +57,7 @@ v1 sorts each ticket automatically into one of five categories: **Billing**, **B
 |---|---|---|
 | `category` | enum of the five categories | the chosen category |
 | `confidence` | number 0–1 | anchored by the rubric below |
-| `needs_human` | boolean | model's own judgement that a person should look |
+| `needs_human` | boolean | model is unsure which category fits, or the ticket reports a security/privacy problem; a routine support action (refund, closing an account, receipts, identity check) is not a reason by itself |
 | `reason` | string | one line explaining the choice |
 
 Confidence rubric given in the prompt:
@@ -65,7 +67,7 @@ Confidence rubric given in the prompt:
 - **< 0.7** — two categories fit, or there is not enough information.
 
 Final flag: `needs_human = model needs_human OR confidence < 0.7`.
-The 0.7 threshold is tuned after the first evaluation run, from how confidence lines up with correctness.
+The 0.7 threshold stays: on the final run every labelled ticket was correct for both models, so there is no confidence-vs-correctness signal to tune it on.
 
 ### PII
 
@@ -89,7 +91,7 @@ The 0.7 threshold is tuned after the first evaluation run, from how confidence l
 
 ### Evaluation
 
-`evaluate` runs the classifier on the 40 labelled tickets and reports:
+`evaluate` checks that the input has `label` and `corrected_label` columns before any call, then runs the classifier on the 40 labelled tickets and reports:
 
 - accuracy against `label` and against `corrected_label`;
 - precision and recall per category;
@@ -151,8 +153,13 @@ Run with `uv run fastapi dev app/main.py`; interactive docs at `/docs`.
   - PII in tickets: full card number (T005), email and phone (T012), home address (T027);
   - tiny dataset: 7–10 tickets per category, one error moves accuracy by 2.5 points.
 
+## Alternative tried: embedding kNN
+
+An embedding kNN classifier (`all-MiniLM-L6-v2` + Chroma, similarity-weighted vote, leave-one-out) scored 47.5–55% for k ∈ {1, 2, 3, 5, 10}.
+It lives only on branch `feat/06-embedding-knn` (`results/embedding_eval.md`) and is deliberately not merged: its dependencies (torch, chromadb, sentence-transformers) are heavy for a classifier we don't use.
+
 ## Out of scope for v1
 
 - Multi-label output.
-- Few-shot prompting, local models, classic ML.
+- Few-shot prompting, local models, classic ML (beyond the unmerged kNN branch).
 - Anthropic API transport.
