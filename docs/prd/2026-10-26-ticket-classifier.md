@@ -26,7 +26,14 @@ v1 sorts each ticket automatically into one of five categories: **Billing**, **B
   Switching to the API is a later step if time allows.
 - Structured output via `--json-schema`; the result is read from `structured_output` in `--output-format json`.
 - Each call is isolated: `--tools ""`, `--setting-sources ""`, `--no-session-persistence`, our own `--system-prompt`, run from a scratch working directory, so no repo instructions, hooks or plugins leak into the classifier.
+- The ticket text is sent on stdin, not argv, so text starting with `-` is never read as a flag.
 - Calls run 5 in parallel.
+- Each call has a 120 s timeout and is retried with `tenacity`: up to 4 attempts, exponential backoff with jitter (1 s initial, 30 s max).
+  Retried: timeout, empty or unparseable stdout, missing or incomplete `structured_output`, and `is_error` responses with `api_error_status` 429 or 5xx (including 529 overloaded) or a clearly transient message (rate limit, overloaded, network, connection).
+  Not retried (fail on the first attempt): other `is_error` responses (auth, invalid model, 4xx) and a non-zero exit with a non-transient error; programming errors are never retried.
+  On a non-zero exit the JSON on stdout is read first, stderr is the fallback.
+  A ticket that fails its last attempt gets an empty category, `needs_human=True` and the error in `reason`; the run continues.
+  The printed cost and tokens include every attempt that returned JSON, retries and failures too.
 - Measured on one call: ~3.7 s, ~$0.0054 list price; ~$0.27 for all 50 tickets.
 
 ### Prompt
@@ -101,8 +108,9 @@ Metrics are computed by hand, no sklearn.
 - Single module `classify.py` with two commands, `evaluate` and `predict`.
 - TDD with pytest; tests replace the `claude -p` call with a fake, so they run without the CLI.
   Covered: PII masking, parsing the CLI JSON, the `needs_human` rule, the metrics, CSV output.
-- One real smoke test against `claude -p`, skipped when `claude` is not on PATH.
-- Dependencies: `pytest` only (dev).
+- One real smoke test against `claude -p`, skipped unless `RUN_LIVE=1` and `claude` is on PATH.
+- The live `claude -p` smoke test is billed, so it runs only with `RUN_LIVE=1`.
+- Dependencies: `tenacity`; `pytest` (dev).
 
 ## README content
 

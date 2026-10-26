@@ -1,12 +1,20 @@
 import csv
 import json
+import os
+import re
 import shutil
 import subprocess
+import tempfile
+import threading
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from tenacity import wait_none
 
 import classify
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def cli_result(category="Bug", confidence=0.95, needs_human=False, reason="broken", cost=0.005):
@@ -40,16 +48,24 @@ def read_rows(path):
         return list(csv.DictReader(f))
 
 
-def test_classify_parses_structured_output_cost_and_tokens():
-    result = classify.classify("t", call=lambda text: cli_result())
+def test_classify_parses_recorded_real_response():
+    recorded = json.loads((FIXTURES / "claude_response.json").read_text())
+    result = classify.classify("t", call=lambda text: recorded)
     assert result == {
-        "category": "Bug",
-        "confidence": 0.95,
-        "needs_human": False,
-        "reason": "broken",
-        "cost": 0.005,
-        "tokens": 135,
+        "category": "Billing",
+        "confidence": 0.97,
+        "needs_human": True,
+        "reason": recorded["structured_output"]["reason"],
+        "cost": recorded["total_cost_usd"],
+        "tokens": 2 + 168 + 1289 + 331,
     }
+
+
+def test_classify_sums_cost_of_every_attempt():
+    call = flaky_call(1, {**cli_result(), "is_error": True, "structured_output": None, "api_error_status": 429, "result": "slow down", "total_cost_usd": 0.01})
+    result = classify.classify("t", call=call, wait=wait_none())
+    assert result["cost"] == pytest.approx(0.015)
+    assert result["tokens"] == 270
 
 
 def test_low_confidence_forces_needs_human():
@@ -96,9 +112,14 @@ def flaky_call(failures, failure):
 @pytest.mark.parametrize(
     "failure",
     [
-        {"is_error": True, "result": "overloaded"},
+        {"is_error": True, "api_error_status": 429, "result": "rate limited"},
+        {"is_error": True, "api_error_status": 529, "result": "x"},
+        {"is_error": True, "api_error_status": 503, "result": "x"},
+        {"is_error": True, "api_error_status": None, "result": "overloaded"},
+        {"is_error": True, "api_error_status": None, "result": "network connection reset"},
         {"is_error": False},
-        lambda: (_ for _ in ()).throw(classify.ClassifyError("exit 1")),
+        {"is_error": False, "structured_output": {"category": "Bug"}},
+        lambda: (_ for _ in ()).throw(classify.ClassifyError("exit 1", transient=True)),
     ],
 )
 def test_classify_retries_transient_failures_then_succeeds(failure):
@@ -108,8 +129,31 @@ def test_classify_retries_transient_failures_then_succeeds(failure):
     assert len(call.attempts) == 3
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [
+        {"is_error": True, "api_error_status": 401, "result": "invalid api key"},
+        {"is_error": True, "api_error_status": 400, "result": "bad request"},
+        {"is_error": True, "api_error_status": None, "result": "unknown model"},
+        lambda: (_ for _ in ()).throw(classify.ClassifyError("auth failed")),
+    ],
+)
+def test_classify_fails_fast_on_non_transient_failures(failure):
+    call = flaky_call(99, failure)
+    with pytest.raises(classify.ClassifyError):
+        classify.classify("t", call=call, wait=wait_none())
+    assert len(call.attempts) == 1
+
+
+def test_backoff_grows_and_is_capped():
+    waits = [classify.BACKOFF(SimpleNamespace(attempt_number=n)) for n in (1, 2, 3, 4)]
+    assert waits[0] <= 2 <= waits[1] < 4 <= waits[2]
+    assert waits[1] < waits[3] or waits[2] < waits[3]
+    assert classify.BACKOFF(SimpleNamespace(attempt_number=20)) == 30
+
+
 def test_classify_gives_up_after_four_attempts_and_reraises_original():
-    call = flaky_call(99, {"is_error": True, "result": "overloaded"})
+    call = flaky_call(99, {"is_error": True, "api_error_status": 529, "result": "overloaded"})
     with pytest.raises(classify.ClassifyError, match="overloaded"):
         classify.classify("t", call=call, wait=wait_none())
     assert len(call.attempts) == 4
@@ -120,7 +164,7 @@ def test_classify_does_not_retry_programming_errors():
 
     def call(text):
         attempts.append(text)
-        return {"is_error": False, "structured_output": {"category": "Bug"}}
+        raise KeyError("bug")
 
     with pytest.raises(KeyError):
         classify.classify("t", call=call, wait=wait_none())
@@ -130,7 +174,7 @@ def test_classify_does_not_retry_programming_errors():
 def test_predict_reports_failed_row_after_all_retries(tmp_path, capsys):
     src, out = tmp_path / "in.csv", tmp_path / "out.csv"
     write_tickets(src, [["T1", "a"]])
-    call = flaky_call(99, {"is_error": True, "result": "429 rate limit"})
+    call = flaky_call(99, {"is_error": True, "api_error_status": 429, "result": "429 rate limit"})
     classify.predict(src, out, call=call, wait=wait_none())
     row = read_rows(out)[0]
     assert len(call.attempts) == 4
@@ -178,9 +222,22 @@ def test_predict_writes_csv_and_reports_totals(tmp_path, capsys):
     assert rows[0]["predicted_category"] == "Billing"
     assert rows[0]["needs_human"] == "True"
     printed = capsys.readouterr().out
-    assert "0.0100" in printed
-    assert "270" in printed
-    assert "s" in printed
+    assert re.search(r"cost \$0\.0100 \| tokens 270 \| time \d+\.\ds", printed)
+
+
+def test_predict_cost_includes_retried_and_failed_attempts(tmp_path, capsys):
+    src, out = tmp_path / "in.csv", tmp_path / "out.csv"
+    write_tickets(src, [["T1", "a"]])
+    call = flaky_call(99, {"is_error": True, "api_error_status": 429, "result": "x", "total_cost_usd": 0.01})
+    classify.predict(src, out, call=call, wait=wait_none())
+    assert "cost $0.0400" in capsys.readouterr().out
+
+
+def test_predict_rejects_csv_without_required_columns(tmp_path):
+    src = tmp_path / "in.csv"
+    src.write_text("id,body\n1,hi\n")
+    with pytest.raises(ValueError, match="ticket_id"):
+        classify.predict(src, tmp_path / "out.csv", call=lambda text: cli_result())
 
 
 def test_predict_reports_failed_ticket_without_crashing(tmp_path, capsys):
@@ -207,17 +264,41 @@ def test_predict_keeps_input_order_with_parallel_calls(tmp_path):
     assert [r["reason"] for r in rows] == [f"text{i}" for i in range(12)]
 
 
-def test_command_line_has_isolation_flags(monkeypatch):
+def test_predict_runs_exactly_five_calls_concurrently(tmp_path):
+    src, out = tmp_path / "in.csv", tmp_path / "out.csv"
+    write_tickets(src, [[f"T{i}", f"text{i}"] for i in range(10)])
+    barrier = threading.Barrier(5, timeout=5)
+    lock = threading.Lock()
+    running = peak = 0
+
+    def call(text):
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        barrier.wait()
+        with lock:
+            running -= 1
+        return cli_result()
+
+    classify.predict(src, out, call=call)
+    assert peak == 5
+
+
+def test_command_line_has_isolation_flags_and_text_on_stdin(monkeypatch):
     seen = {}
 
     def fake_run(cmd, **kwargs):
         seen["cmd"], seen["kwargs"] = cmd, kwargs
+        seen["cwd_existed"] = os.path.isdir(kwargs["cwd"])
         return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(cli_result()), stderr="")
 
     monkeypatch.setattr(classify.subprocess, "run", fake_run)
-    assert classify.call_claude("hello")["structured_output"]["category"] == "Bug"
+    assert classify.call_claude("--hello")["structured_output"]["category"] == "Bug"
     cmd = seen["cmd"]
-    assert cmd[:3] == ["claude", "-p", "hello"]
+    assert cmd[:2] == ["claude", "-p"]
+    assert "--hello" not in cmd
+    assert seen["kwargs"]["input"] == "--hello"
     for flag, value in [
         ("--model", "claude-sonnet-5-5"),
         ("--output-format", "json"),
@@ -228,24 +309,76 @@ def test_command_line_has_isolation_flags(monkeypatch):
     assert "--no-session-persistence" in cmd
     assert json.loads(cmd[cmd.index("--json-schema") + 1])["properties"]["category"]["enum"] == classify.CATEGORIES
     assert cmd[cmd.index("--system-prompt") + 1] == classify.SYSTEM_PROMPT
-    assert seen["kwargs"]["cwd"] != "."
+    cwd = Path(seen["kwargs"]["cwd"]).resolve()
+    assert seen["cwd_existed"]
+    assert not cwd.is_relative_to(Path(classify.__file__).parent.resolve())
+    assert cwd.is_relative_to(Path(tempfile.gettempdir()).resolve())
+    assert not cwd.exists()
 
 
-def test_call_claude_raises_on_nonzero_exit(monkeypatch):
+def test_call_claude_raises_on_nonzero_exit_without_json(monkeypatch):
     monkeypatch.setattr(
         classify.subprocess,
         "run",
         lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="nope"),
     )
-    with pytest.raises(classify.ClassifyError, match="nope"):
+    with pytest.raises(classify.ClassifyError, match="nope") as raised:
         classify.call_claude("x")
+    assert not raised.value.transient
+
+
+def test_call_claude_transient_nonzero_exit_is_retryable(monkeypatch):
+    monkeypatch.setattr(
+        classify.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="connection reset"),
+    )
+    with pytest.raises(classify.ClassifyError) as raised:
+        classify.call_claude("x")
+    assert raised.value.transient
+
+
+def test_call_claude_reads_error_json_from_stdout_on_nonzero_exit(monkeypatch):
+    error = {"is_error": True, "api_error_status": 401, "result": "invalid api key", "total_cost_usd": 0}
+    monkeypatch.setattr(
+        classify.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout=json.dumps(error), stderr="noise"),
+    )
+    assert classify.call_claude("x") == error
+
+
+@pytest.mark.parametrize("stdout", ["", "not json", "[1]"])
+def test_call_claude_unparseable_stdout_is_retryable(monkeypatch, stdout):
+    monkeypatch.setattr(
+        classify.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=""),
+    )
+    with pytest.raises(classify.ClassifyError) as raised:
+        classify.call_claude("x")
+    assert raised.value.transient
 
 
 def test_system_prompt_has_categories_rules_and_rubric():
-    for needle in [*classify.CATEGORIES, "0.9", "0.7", "Cancellation"]:
+    for needle in [*classify.CATEGORIES, "0.9", "0.7"]:
         assert needle in classify.SYSTEM_PROMPT
 
 
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "login failure caused by an outage",
+        "Fewer locations, downgrade or plan change -> Billing",
+        'Feature Request, even when it mentions "cancel" or login',
+        "stop renewal -> Cancellation",
+    ],
+)
+def test_system_prompt_has_tie_break_rules(rule):
+    assert rule in classify.SYSTEM_PROMPT
+
+
+@pytest.mark.skipif(os.environ.get("RUN_LIVE") != "1", reason="live billed call: set RUN_LIVE=1")
 @pytest.mark.skipif(shutil.which("claude") is None, reason="claude CLI not on PATH")
 def test_smoke_real_claude():
     result = classify.classify("I was charged twice this month, please refund one payment.")

@@ -4,10 +4,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
+from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
 MODEL = "claude-sonnet-5-5"
 CATEGORIES = ["Billing", "Bug", "Account Access", "Feature Request", "Cancellation"]
@@ -15,6 +16,24 @@ CONFIDENCE_THRESHOLD = 0.7
 PARALLEL_CALLS = 5
 CALL_TIMEOUT_SECONDS = 120
 MAX_ATTEMPTS = 4
+REQUIRED_COLUMNS = {"ticket_id", "text"}
+TRANSIENT_MARKERS = (
+    "429",
+    "rate limit",
+    "overloaded",
+    "unavailable",
+    "network",
+    "connection",
+    "timed out",
+    "timeout",
+    "econn",
+)
+TOKEN_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
 BACKOFF = wait_exponential_jitter(initial=1, max=30, jitter=1)
 DEFAULT_OUTPUT = Path("results/predictions_new.csv")
 OUTPUT_COLUMNS = [
@@ -63,14 +82,30 @@ SCHEMA = {
 
 
 class ClassifyError(Exception):
-    pass
+    def __init__(self, message, transient=False):
+        super().__init__(message)
+        self.transient = transient
+        self.cost = 0.0
+        self.tokens = 0
+
+
+@dataclass
+class RowResult:
+    row: dict
+    cost: float
+    tokens: int
+    error: str | None = None
+
+
+def looks_transient(message):
+    lowered = message.lower()
+    return any(marker in lowered for marker in TRANSIENT_MARKERS)
 
 
 def call_claude(text):
     command = [
         "claude",
         "-p",
-        text,
         "--model",
         MODEL,
         "--output-format",
@@ -88,84 +123,104 @@ def call_claude(text):
     with tempfile.TemporaryDirectory() as scratch:
         try:
             completed = subprocess.run(
-                command, cwd=scratch, capture_output=True, text=True, timeout=CALL_TIMEOUT_SECONDS
+                command,
+                cwd=scratch,
+                input=text,
+                capture_output=True,
+                text=True,
+                timeout=CALL_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired as error:
-            raise ClassifyError(f"claude timed out after {CALL_TIMEOUT_SECONDS}s") from error
-    if completed.returncode != 0:
-        raise ClassifyError(completed.stderr.strip() or f"claude exited {completed.returncode}")
+            raise ClassifyError(f"claude timed out after {CALL_TIMEOUT_SECONDS}s", transient=True) from error
     try:
-        return json.loads(completed.stdout)
-    except json.JSONDecodeError as error:
-        raise ClassifyError(f"unparseable claude output: {error}") from error
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, dict) and (completed.returncode == 0 or payload.get("is_error")):
+        return payload
+    if completed.returncode != 0:
+        message = completed.stderr.strip() or f"claude exited {completed.returncode}"
+        raise ClassifyError(message, transient=looks_transient(message))
+    raise ClassifyError("unparseable claude output", transient=True)
 
 
-def structured_output(call, text):
-    response = call(text)
+def checked_response(response):
     if response.get("is_error"):
-        raise ClassifyError(str(response.get("result", "claude reported an error")))
-    if not response.get("structured_output"):
-        raise ClassifyError("no structured_output in claude response")
+        message = str(response.get("result", "claude reported an error"))
+        status = response.get("api_error_status")
+        transient = status == 429 or status >= 500 if isinstance(status, int) else looks_transient(message)
+        raise ClassifyError(message, transient=transient)
+    output = response.get("structured_output")
+    if not isinstance(output, dict) or not set(SCHEMA["required"]) <= output.keys():
+        raise ClassifyError("no complete structured_output in claude response", transient=True)
     return response
 
 
-def classify(text, call=call_claude, wait=BACKOFF):
-    response = Retrying(
-        retry=retry_if_exception_type(ClassifyError),
-        stop=stop_after_attempt(MAX_ATTEMPTS),
-        wait=wait,
-        reraise=True,
-    )(structured_output, call, text)
-    output = response["structured_output"]
+def usage_tokens(response):
     usage = response.get("usage", {})
+    return sum(usage.get(key, 0) for key in TOKEN_KEYS)
+
+
+def classify(text, call=call_claude, wait=BACKOFF):
+    spent = {"cost": 0.0, "tokens": 0}
+
+    def attempt():
+        response = call(text)
+        spent["cost"] += response.get("total_cost_usd", 0.0)
+        spent["tokens"] += usage_tokens(response)
+        return checked_response(response)
+
+    try:
+        response = Retrying(
+            retry=retry_if_exception(lambda error: isinstance(error, ClassifyError) and error.transient),
+            stop=stop_after_attempt(MAX_ATTEMPTS),
+            wait=wait,
+            reraise=True,
+        )(attempt)
+    except ClassifyError as error:
+        error.cost, error.tokens = spent["cost"], spent["tokens"]
+        raise
+    output = response["structured_output"]
     return {
         "category": output["category"],
         "confidence": output["confidence"],
         "needs_human": output["needs_human"] or output["confidence"] < CONFIDENCE_THRESHOLD,
         "reason": output["reason"],
-        "cost": response.get("total_cost_usd", 0.0),
-        "tokens": sum(
-            usage.get(key, 0)
-            for key in (
-                "input_tokens",
-                "output_tokens",
-                "cache_creation_input_tokens",
-                "cache_read_input_tokens",
-            )
-        ),
+        **spent,
     }
 
 
 def classify_row(ticket, call, wait):
+    row = {"ticket_id": ticket["ticket_id"], "text_redacted": ticket["text"]}
     try:
-        return classify(ticket["text"], call=call, wait=wait)
-    except (ClassifyError, KeyError) as error:
-        return {"error": str(error) or type(error).__name__, "cost": 0.0, "tokens": 0}
-
-
-def output_row(ticket, result):
-    if "error" in result:
-        return {
-            "ticket_id": ticket["ticket_id"],
-            "text_redacted": ticket["text"],
+        result = classify(ticket["text"], call=call, wait=wait)
+    except ClassifyError as error:
+        failure = {
             "predicted_category": "",
             "confidence": "",
             "needs_human": True,
-            "reason": f"classification failed: {result['error']}",
+            "reason": f"classification failed: {error}",
         }
-    return {
-        "ticket_id": ticket["ticket_id"],
-        "text_redacted": ticket["text"],
+        return RowResult({**row, **failure}, error.cost, error.tokens, error=str(error))
+    prediction = {
         "predicted_category": result["category"],
         "confidence": result["confidence"],
         "needs_human": result["needs_human"],
         "reason": result["reason"],
     }
+    return RowResult({**row, **prediction}, result["cost"], result["tokens"])
+
+
+def read_tickets(input_path):
+    with open(input_path, newline="") as source:
+        reader = csv.DictReader(source)
+        if not REQUIRED_COLUMNS <= set(reader.fieldnames or []):
+            raise ValueError(f"{input_path} must have columns ticket_id,text")
+        return list(reader)
 
 
 def predict(input_path, output_path=DEFAULT_OUTPUT, call=call_claude, wait=BACKOFF):
-    with open(input_path, newline="") as source:
-        tickets = list(csv.DictReader(source))
+    tickets = read_tickets(input_path)
     started = time.monotonic()
     with ThreadPoolExecutor(max_workers=PARALLEL_CALLS) as pool:
         results = list(pool.map(lambda ticket: classify_row(ticket, call, wait), tickets))
@@ -176,15 +231,15 @@ def predict(input_path, output_path=DEFAULT_OUTPUT, call=call_claude, wait=BACKO
     with open(output_path, "w", newline="") as target:
         writer = csv.DictWriter(target, fieldnames=OUTPUT_COLUMNS)
         writer.writeheader()
-        writer.writerows(output_row(t, r) for t, r in zip(tickets, results))
+        writer.writerows(r.row for r in results)
 
-    for ticket, result in zip(tickets, results):
-        if "error" in result:
-            print(f"FAILED {ticket['ticket_id']}: {result['error']}")
+    for result in results:
+        if result.error:
+            print(f"FAILED {result.row['ticket_id']}: {result.error}")
     print(
         f"{len(tickets)} tickets -> {output_path} | "
-        f"cost ${sum(r['cost'] for r in results):.4f} | "
-        f"tokens {sum(r['tokens'] for r in results)} | "
+        f"cost ${sum(r.cost for r in results):.4f} | "
+        f"tokens {sum(r.tokens for r in results)} | "
         f"time {elapsed:.1f}s"
     )
 

@@ -7,4 +7,7 @@ For now only unit tests: integration and E2E are added when a ticket needs them.
 
 | Layer       | Command | Needs |
 | ----------- | ------- | ----- |
-| Unit        | not defined yet | nothing |
+| Unit        | `uv run pytest` | nothing |
+| Live smoke  | `RUN_LIVE=1 uv run pytest tests/test_predict.py::test_smoke_real_claude` | `claude` on PATH; makes one billed `claude -p` call |
+
+`RUN_LIVE=1` enables tests that call the real `claude` CLI; without it they are skipped.
