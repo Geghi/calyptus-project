@@ -2,7 +2,9 @@
 name = "shiftwise-classifier"
 version = "0.1.0"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "tenacity>=9.2.1",
+]
 
 [dependency-groups]
 dev = [

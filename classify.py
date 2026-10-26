@@ -7,10 +7,15 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
+
 MODEL = "claude-sonnet-5-5"
 CATEGORIES = ["Billing", "Bug", "Account Access", "Feature Request", "Cancellation"]
 CONFIDENCE_THRESHOLD = 0.7
 PARALLEL_CALLS = 5
+CALL_TIMEOUT_SECONDS = 120
+MAX_ATTEMPTS = 4
+BACKOFF = wait_exponential_jitter(initial=1, max=30, jitter=1)
 DEFAULT_OUTPUT = Path("results/predictions_new.csv")
 OUTPUT_COLUMNS = [
     "ticket_id",
@@ -81,7 +86,12 @@ def call_claude(text):
         json.dumps(SCHEMA),
     ]
     with tempfile.TemporaryDirectory() as scratch:
-        completed = subprocess.run(command, cwd=scratch, capture_output=True, text=True)
+        try:
+            completed = subprocess.run(
+                command, cwd=scratch, capture_output=True, text=True, timeout=CALL_TIMEOUT_SECONDS
+            )
+        except subprocess.TimeoutExpired as error:
+            raise ClassifyError(f"claude timed out after {CALL_TIMEOUT_SECONDS}s") from error
     if completed.returncode != 0:
         raise ClassifyError(completed.stderr.strip() or f"claude exited {completed.returncode}")
     try:
@@ -90,13 +100,23 @@ def call_claude(text):
         raise ClassifyError(f"unparseable claude output: {error}") from error
 
 
-def classify(text, call=call_claude):
+def structured_output(call, text):
     response = call(text)
     if response.get("is_error"):
         raise ClassifyError(str(response.get("result", "claude reported an error")))
-    output = response.get("structured_output")
-    if not output:
+    if not response.get("structured_output"):
         raise ClassifyError("no structured_output in claude response")
+    return response
+
+
+def classify(text, call=call_claude, wait=BACKOFF):
+    response = Retrying(
+        retry=retry_if_exception_type(ClassifyError),
+        stop=stop_after_attempt(MAX_ATTEMPTS),
+        wait=wait,
+        reraise=True,
+    )(structured_output, call, text)
+    output = response["structured_output"]
     usage = response.get("usage", {})
     return {
         "category": output["category"],
@@ -116,9 +136,9 @@ def classify(text, call=call_claude):
     }
 
 
-def classify_row(ticket, call):
+def classify_row(ticket, call, wait):
     try:
-        return classify(ticket["text"], call=call)
+        return classify(ticket["text"], call=call, wait=wait)
     except (ClassifyError, KeyError) as error:
         return {"error": str(error) or type(error).__name__, "cost": 0.0, "tokens": 0}
 
@@ -143,12 +163,12 @@ def output_row(ticket, result):
     }
 
 
-def predict(input_path, output_path=DEFAULT_OUTPUT, call=call_claude):
+def predict(input_path, output_path=DEFAULT_OUTPUT, call=call_claude, wait=BACKOFF):
     with open(input_path, newline="") as source:
         tickets = list(csv.DictReader(source))
     started = time.monotonic()
     with ThreadPoolExecutor(max_workers=PARALLEL_CALLS) as pool:
-        results = list(pool.map(lambda ticket: classify_row(ticket, call), tickets))
+        results = list(pool.map(lambda ticket: classify_row(ticket, call, wait), tickets))
     elapsed = time.monotonic() - started
 
     output_path = Path(output_path)

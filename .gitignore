@@ -1,9 +1,9 @@
-.agents/
-.claude/
+.agents
+.claude
 CLAUDE.md
 AGENTS.md
-.scratch/
-.out-of-scope/
+.scratch
+.out-of-scope
 
 # Python
 __pycache__/

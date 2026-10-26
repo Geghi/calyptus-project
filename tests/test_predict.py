@@ -4,6 +4,7 @@ import shutil
 import subprocess
 
 import pytest
+from tenacity import wait_none
 
 import classify
 
@@ -76,7 +77,87 @@ def test_confident_and_model_ok_means_no_human():
 )
 def test_classify_raises_on_bad_cli_result(bad):
     with pytest.raises(classify.ClassifyError):
-        classify.classify("t", call=lambda text: bad)
+        classify.classify("t", call=lambda text: bad, wait=wait_none())
+
+
+def flaky_call(failures, failure):
+    attempts = []
+
+    def call(text):
+        attempts.append(text)
+        if len(attempts) <= failures:
+            return failure() if callable(failure) else failure
+        return cli_result()
+
+    call.attempts = attempts
+    return call
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        {"is_error": True, "result": "overloaded"},
+        {"is_error": False},
+        lambda: (_ for _ in ()).throw(classify.ClassifyError("exit 1")),
+    ],
+)
+def test_classify_retries_transient_failures_then_succeeds(failure):
+    call = flaky_call(2, failure)
+    result = classify.classify("t", call=call, wait=wait_none())
+    assert result["category"] == "Bug"
+    assert len(call.attempts) == 3
+
+
+def test_classify_gives_up_after_four_attempts_and_reraises_original():
+    call = flaky_call(99, {"is_error": True, "result": "overloaded"})
+    with pytest.raises(classify.ClassifyError, match="overloaded"):
+        classify.classify("t", call=call, wait=wait_none())
+    assert len(call.attempts) == 4
+
+
+def test_classify_does_not_retry_programming_errors():
+    attempts = []
+
+    def call(text):
+        attempts.append(text)
+        return {"is_error": False, "structured_output": {"category": "Bug"}}
+
+    with pytest.raises(KeyError):
+        classify.classify("t", call=call, wait=wait_none())
+    assert len(attempts) == 1
+
+
+def test_predict_reports_failed_row_after_all_retries(tmp_path, capsys):
+    src, out = tmp_path / "in.csv", tmp_path / "out.csv"
+    write_tickets(src, [["T1", "a"]])
+    call = flaky_call(99, {"is_error": True, "result": "429 rate limit"})
+    classify.predict(src, out, call=call, wait=wait_none())
+    row = read_rows(out)[0]
+    assert len(call.attempts) == 4
+    assert row["needs_human"] == "True"
+    assert "429" in row["reason"]
+    assert "FAILED T1" in capsys.readouterr().out
+
+
+def test_call_claude_turns_timeout_into_classify_error(monkeypatch):
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+    monkeypatch.setattr(classify.subprocess, "run", fake_run)
+    with pytest.raises(classify.ClassifyError, match="timed out"):
+        classify.call_claude("x")
+
+
+def test_call_claude_sets_a_timeout(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(cli_result()), stderr="")
+
+    monkeypatch.setattr(classify.subprocess, "run", fake_run)
+    classify.call_claude("x")
+    assert seen["timeout"] == classify.CALL_TIMEOUT_SECONDS
 
 
 def test_predict_writes_csv_and_reports_totals(tmp_path, capsys):
@@ -109,7 +190,7 @@ def test_predict_reports_failed_ticket_without_crashing(tmp_path, capsys):
     def call(text):
         return cli_result() if text == "ok" else {"is_error": True, "result": "boom"}
 
-    classify.predict(src, out, call=call)
+    classify.predict(src, out, call=call, wait=wait_none())
     rows = {r["ticket_id"]: r for r in read_rows(out)}
     assert rows["T1"]["predicted_category"] == "Bug"
     assert rows["T2"]["predicted_category"] == ""
