@@ -135,6 +135,8 @@ def test_classify_retries_transient_failures_then_succeeds(failure):
         {"is_error": True, "api_error_status": 401, "result": "invalid api key"},
         {"is_error": True, "api_error_status": 400, "result": "bad request"},
         {"is_error": True, "api_error_status": None, "result": "unknown model"},
+        {"is_error": True, "api_error_status": 400, "result": "429 tokens over the limit"},
+        {"is_error": True, "api_error_status": 400, "result": "connection field is invalid"},
         lambda: (_ for _ in ()).throw(classify.ClassifyError("auth failed")),
     ],
 )
@@ -148,7 +150,7 @@ def test_classify_fails_fast_on_non_transient_failures(failure):
 def test_backoff_grows_and_is_capped():
     waits = [classify.BACKOFF(SimpleNamespace(attempt_number=n)) for n in (1, 2, 3, 4)]
     assert waits[0] <= 2 <= waits[1] < 4 <= waits[2]
-    assert waits[1] < waits[3] or waits[2] < waits[3]
+    assert 8 <= waits[3] <= 9
     assert classify.BACKOFF(SimpleNamespace(attempt_number=20)) == 30
 
 
@@ -231,6 +233,40 @@ def test_predict_cost_includes_retried_and_failed_attempts(tmp_path, capsys):
     call = flaky_call(99, {"is_error": True, "api_error_status": 429, "result": "x", "total_cost_usd": 0.01})
     classify.predict(src, out, call=call, wait=wait_none())
     assert "cost $0.0400" in capsys.readouterr().out
+
+
+def test_predict_survives_unexpected_errors_per_ticket(tmp_path, capsys):
+    src, out = tmp_path / "in.csv", tmp_path / "out.csv"
+    write_tickets(src, [["T1", "ok"], ["T2", "nulls"], ["T3", "explodes"]])
+    attempts = []
+
+    def call(text):
+        attempts.append(text)
+        if text == "nulls":
+            return {**cli_result(), "usage": None, "total_cost_usd": None}
+        if text == "explodes":
+            raise KeyError("secret internals")
+        return cli_result()
+
+    classify.predict(src, out, call=call, wait=wait_none())
+    rows = {r["ticket_id"]: r for r in read_rows(out)}
+    assert rows["T1"]["predicted_category"] == "Bug"
+    assert rows["T2"]["predicted_category"] == "Bug"
+    assert rows["T3"]["predicted_category"] == ""
+    assert rows["T3"]["needs_human"] == "True"
+    assert "secret internals" not in rows["T3"]["reason"]
+    assert attempts.count("explodes") == 1
+    captured = capsys.readouterr()
+    assert "secret internals" in captured.err
+    assert "FAILED T3" in captured.out
+
+
+def test_classify_outcome_carries_cost_of_failed_attempts():
+    call = flaky_call(99, {"is_error": True, "api_error_status": 529, "result": "x", "total_cost_usd": 0.01})
+    outcome = classify.run_classification("t", call=call, wait=wait_none())
+    assert outcome.prediction is None
+    assert outcome.error == "x"
+    assert outcome.cost == pytest.approx(0.04)
 
 
 def test_predict_rejects_csv_without_required_columns(tmp_path):

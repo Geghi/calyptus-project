@@ -33,6 +33,8 @@ v1 sorts each ticket automatically into one of five categories: **Billing**, **B
   Not retried (fail on the first attempt): other `is_error` responses (auth, invalid model, 4xx) and a non-zero exit with a non-transient error; programming errors are never retried.
   On a non-zero exit the JSON on stdout is read first, stderr is the fallback.
   A ticket that fails its last attempt gets an empty category, `needs_human=True` and the error in `reason`; the run continues.
+  An unexpected error on one ticket (e.g. a malformed response) is not retried: that ticket gets a failed row with a generic reason, the raw error goes to stderr, and the run continues.
+  Transience is decided by `api_error_status` when present; text markers apply only when there is no status or the error comes from stderr.
   The printed cost and tokens include every attempt that returned JSON, retries and failures too.
 - Measured on one call: ~3.7 s, ~$0.0054 list price; ~$0.27 for all 50 tickets.
 
@@ -108,8 +110,7 @@ Metrics are computed by hand, no sklearn.
 - Single module `classify.py` with two commands, `evaluate` and `predict`.
 - TDD with pytest; tests replace the `claude -p` call with a fake, so they run without the CLI.
   Covered: PII masking, parsing the CLI JSON, the `needs_human` rule, the metrics, CSV output.
-- One real smoke test against `claude -p`, skipped unless `RUN_LIVE=1` and `claude` is on PATH.
-- The live `claude -p` smoke test is billed, so it runs only with `RUN_LIVE=1`.
+- One real smoke test against `claude -p`; it is billed, so it runs only with `RUN_LIVE=1` and `claude` on PATH.
 - Dependencies: `tenacity`; `pytest` (dev).
 
 ## README content

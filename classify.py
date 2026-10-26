@@ -85,15 +85,13 @@ class ClassifyError(Exception):
     def __init__(self, message, transient=False):
         super().__init__(message)
         self.transient = transient
-        self.cost = 0.0
-        self.tokens = 0
 
 
 @dataclass
-class RowResult:
-    row: dict
-    cost: float
-    tokens: int
+class Outcome:
+    cost: float = 0.0
+    tokens: int = 0
+    prediction: dict | None = None
     error: str | None = None
 
 
@@ -148,7 +146,10 @@ def checked_response(response):
     if response.get("is_error"):
         message = str(response.get("result", "claude reported an error"))
         status = response.get("api_error_status")
-        transient = status == 429 or status >= 500 if isinstance(status, int) else looks_transient(message)
+        if isinstance(status, int):
+            transient = status == 429 or status >= 500
+        else:
+            transient = looks_transient(message)
         raise ClassifyError(message, transient=transient)
     output = response.get("structured_output")
     if not isinstance(output, dict) or not set(SCHEMA["required"]) <= output.keys():
@@ -157,17 +158,17 @@ def checked_response(response):
 
 
 def usage_tokens(response):
-    usage = response.get("usage", {})
+    usage = response.get("usage") or {}
     return sum(usage.get(key, 0) for key in TOKEN_KEYS)
 
 
-def classify(text, call=call_claude, wait=BACKOFF):
-    spent = {"cost": 0.0, "tokens": 0}
+def run_classification(text, call=call_claude, wait=BACKOFF):
+    outcome = Outcome()
 
     def attempt():
         response = call(text)
-        spent["cost"] += response.get("total_cost_usd", 0.0)
-        spent["tokens"] += usage_tokens(response)
+        outcome.cost += response.get("total_cost_usd") or 0.0
+        outcome.tokens += usage_tokens(response)
         return checked_response(response)
 
     try:
@@ -178,37 +179,47 @@ def classify(text, call=call_claude, wait=BACKOFF):
             reraise=True,
         )(attempt)
     except ClassifyError as error:
-        error.cost, error.tokens = spent["cost"], spent["tokens"]
-        raise
+        outcome.error = str(error)
+        return outcome
     output = response["structured_output"]
-    return {
+    outcome.prediction = {
         "category": output["category"],
         "confidence": output["confidence"],
         "needs_human": output["needs_human"] or output["confidence"] < CONFIDENCE_THRESHOLD,
         "reason": output["reason"],
-        **spent,
     }
+    return outcome
+
+
+def classify(text, call=call_claude, wait=BACKOFF):
+    outcome = run_classification(text, call=call, wait=wait)
+    if outcome.error is not None:
+        raise ClassifyError(outcome.error)
+    return {**outcome.prediction, "cost": outcome.cost, "tokens": outcome.tokens}
 
 
 def classify_row(ticket, call, wait):
     row = {"ticket_id": ticket["ticket_id"], "text_redacted": ticket["text"]}
     try:
-        result = classify(ticket["text"], call=call, wait=wait)
-    except ClassifyError as error:
+        outcome = run_classification(ticket["text"], call=call, wait=wait)
+    except Exception as error:
+        print(f"unexpected error on {ticket['ticket_id']}: {error!r}", file=sys.stderr)
+        outcome = Outcome(error="unexpected error")
+    if outcome.error is not None:
         failure = {
             "predicted_category": "",
             "confidence": "",
             "needs_human": True,
-            "reason": f"classification failed: {error}",
+            "reason": f"classification failed: {outcome.error}",
         }
-        return RowResult({**row, **failure}, error.cost, error.tokens, error=str(error))
+        return {**row, **failure}, outcome
     prediction = {
-        "predicted_category": result["category"],
-        "confidence": result["confidence"],
-        "needs_human": result["needs_human"],
-        "reason": result["reason"],
+        "predicted_category": outcome.prediction["category"],
+        "confidence": outcome.prediction["confidence"],
+        "needs_human": outcome.prediction["needs_human"],
+        "reason": outcome.prediction["reason"],
     }
-    return RowResult({**row, **prediction}, result["cost"], result["tokens"])
+    return {**row, **prediction}, outcome
 
 
 def read_tickets(input_path):
@@ -231,15 +242,15 @@ def predict(input_path, output_path=DEFAULT_OUTPUT, call=call_claude, wait=BACKO
     with open(output_path, "w", newline="") as target:
         writer = csv.DictWriter(target, fieldnames=OUTPUT_COLUMNS)
         writer.writeheader()
-        writer.writerows(r.row for r in results)
+        writer.writerows(row for row, _ in results)
 
-    for result in results:
-        if result.error:
-            print(f"FAILED {result.row['ticket_id']}: {result.error}")
+    for row, outcome in results:
+        if outcome.error is not None:
+            print(f"FAILED {row['ticket_id']}: {outcome.error}")
     print(
         f"{len(tickets)} tickets -> {output_path} | "
-        f"cost ${sum(r.cost for r in results):.4f} | "
-        f"tokens {sum(r.tokens for r in results)} | "
+        f"cost ${sum(outcome.cost for _, outcome in results):.4f} | "
+        f"tokens {sum(outcome.tokens for _, outcome in results)} | "
         f"time {elapsed:.1f}s"
     )
 
