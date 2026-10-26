@@ -244,12 +244,16 @@ def read_tickets(input_path):
         return list(reader)
 
 
-def predict(input_path, output_path=DEFAULT_OUTPUT, call=call_claude, wait=BACKOFF):
-    tickets = read_tickets(input_path)
+def classify_all(tickets, call, wait):
     started = time.monotonic()
     with ThreadPoolExecutor(max_workers=PARALLEL_CALLS) as pool:
         results = list(pool.map(lambda ticket: classify_row(ticket, call, wait), tickets))
-    elapsed = time.monotonic() - started
+    return results, time.monotonic() - started
+
+
+def predict(input_path, output_path=DEFAULT_OUTPUT, call=call_claude, wait=BACKOFF):
+    tickets = read_tickets(input_path)
+    results, elapsed = classify_all(tickets, call, wait)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -270,9 +274,14 @@ def predict(input_path, output_path=DEFAULT_OUTPUT, call=call_claude, wait=BACKO
 
 
 def main(argv):
-    if len(argv) != 3 or argv[1] != "predict":
-        sys.exit("usage: classify.py predict TICKETS_CSV")
-    predict(argv[2])
+    if len(argv) == 2 and argv[1] == "evaluate":
+        from evaluate import evaluate
+
+        evaluate()
+    elif len(argv) == 3 and argv[1] == "predict":
+        predict(argv[2])
+    else:
+        sys.exit("usage: classify.py predict TICKETS_CSV | classify.py evaluate")
 
 
 if __name__ == "__main__":
