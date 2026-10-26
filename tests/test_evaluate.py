@@ -1,6 +1,7 @@
 import csv
 
 import pytest
+from tenacity import wait_none
 
 import classify
 import evaluate
@@ -61,7 +62,7 @@ def test_confusion_matrix_counts_expected_by_predicted_with_failures_apart():
 def row(ticket_id, label, corrected, predicted, confidence=0.9, needs_human=False, reason="because"):
     return {
         "ticket_id": ticket_id,
-        "text": f"text {ticket_id}",
+        "text_redacted": f"text {ticket_id}",
         "label": label,
         "corrected_label": corrected,
         "predicted_category": predicted,
@@ -130,7 +131,7 @@ def test_evaluate_writes_report_and_predictions(tmp_path):
     rows = read_rows(predictions)
     assert list(rows[0]) == [
         "ticket_id",
-        "text",
+        "text_redacted",
         "label",
         "corrected_label",
         "predicted_category",
@@ -143,3 +144,37 @@ def test_evaluate_writes_report_and_predictions(tmp_path):
     assert "Accuracy vs `label`: 50.0% (1/2)" in text
     assert "vs `corrected_label`: 100.0% (2/2)" in text
     assert "$0.0100" in text
+
+
+def test_report_escapes_pipes_in_text_and_reason():
+    piped = row("T9", "Bug", "Bug", "Billing", reason="a | b")
+    piped["text_redacted"] = "x | y"
+    report = evaluate.render_report([piped], **TOTALS)
+    assert "x \\| y" in report
+    assert "a \\| b" in report
+
+
+def test_evaluate_counts_failed_ticket_as_wrong_and_flagged_and_sums_its_cost(tmp_path):
+    src = tmp_path / "labelled.csv"
+    write_labelled(src, [["T1", "charged twice", "Billing", "Billing"], ["T2", "boom", "Bug", "Bug"]])
+    report, predictions = tmp_path / "eval_report.md", tmp_path / "eval_predictions.csv"
+
+    def call(text):
+        if text == "boom":
+            return {"is_error": True, "result": "invalid request", "total_cost_usd": 0.001}
+        return fake_call(text)
+
+    evaluate.evaluate(src, report, predictions, call=call, wait=wait_none())
+    text = report.read_text()
+    assert "Accuracy vs `label`: 50.0% (1/2)" in text
+    assert "Flagged: 1/2" in text
+    assert "$0.0060" in text
+    assert "classification failed: invalid request" in text
+
+
+def test_evaluate_writes_masked_text(tmp_path):
+    src = tmp_path / "labelled.csv"
+    write_labelled(src, [["T1", "charged twice, mail me at a@b.com", "Billing", "Billing"]])
+    report, predictions = tmp_path / "eval_report.md", tmp_path / "eval_predictions.csv"
+    evaluate.evaluate(src, report, predictions, call=fake_call)
+    assert "a@b.com" not in read_rows(predictions)[0]["text_redacted"]

@@ -1,7 +1,7 @@
 import csv
 from pathlib import Path
 
-from classify import CATEGORIES, BACKOFF, call_claude, classify_all, output_row
+from classify import BACKOFF, CATEGORIES, call_claude, classify_all, read_tickets
 
 FAILED = "failed"
 LABELLED_PATH = Path("data/tickets_labelled.csv")
@@ -9,7 +9,7 @@ REPORT_PATH = Path("results/eval_report.md")
 PREDICTIONS_PATH = Path("results/eval_predictions.csv")
 PREDICTION_COLUMNS = [
     "ticket_id",
-    "text",
+    "text_redacted",
     "label",
     "corrected_label",
     "predicted_category",
@@ -53,7 +53,7 @@ def percent(hits, total):
 
 def table(header, body):
     lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
-    lines += ["| " + " | ".join(str(cell) for cell in line) + " |" for line in body]
+    lines += ["| " + " | ".join(str(cell).replace("|", "\\|") for cell in line) + " |" for line in body]
     return lines
 
 
@@ -98,7 +98,7 @@ def render_report(rows, cost, tokens, seconds):
             [
                 [
                     r["ticket_id"],
-                    r["text"],
+                    r["text_redacted"],
                     r["label"],
                     r["corrected_label"],
                     r["predicted_category"] or FAILED,
@@ -114,21 +114,12 @@ def render_report(rows, cost, tokens, seconds):
 
 
 def evaluate(input_path=LABELLED_PATH, report_path=REPORT_PATH, predictions_path=PREDICTIONS_PATH, call=call_claude, wait=BACKOFF):
-    with open(input_path, newline="") as source:
-        tickets = list(csv.DictReader(source))
+    tickets = read_tickets(input_path)
     results, seconds = classify_all(tickets, call, wait)
-    rows = []
-    for ticket, result in zip(tickets, results):
-        out = output_row(ticket, result)
-        rows.append(
-            {
-                "ticket_id": ticket["ticket_id"],
-                "text": ticket["text"],
-                "label": ticket["label"],
-                "corrected_label": ticket["corrected_label"],
-                **{k: out[k] for k in PREDICTION_COLUMNS[4:]},
-            }
-        )
+    rows = [
+        {**row, "label": ticket["label"], "corrected_label": ticket["corrected_label"]}
+        for ticket, (row, _) in zip(tickets, results)
+    ]
     report_path, predictions_path = Path(report_path), Path(predictions_path)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     predictions_path.parent.mkdir(parents=True, exist_ok=True)
@@ -136,6 +127,7 @@ def evaluate(input_path=LABELLED_PATH, report_path=REPORT_PATH, predictions_path
         writer = csv.DictWriter(target, fieldnames=PREDICTION_COLUMNS)
         writer.writeheader()
         writer.writerows(rows)
-    cost, tokens = sum(r["cost"] for r in results), sum(r["tokens"] for r in results)
+    cost = sum(outcome.cost for _, outcome in results)
+    tokens = sum(outcome.tokens for _, outcome in results)
     report_path.write_text(render_report(rows, cost, tokens, seconds))
     print(f"{len(rows)} tickets -> {report_path}, {predictions_path} | cost ${cost:.4f} | tokens {tokens} | time {seconds:.1f}s")

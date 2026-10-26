@@ -94,9 +94,13 @@ The 0.7 threshold is tuned after the first evaluation run, from how confidence l
 - accuracy against `label` and against `corrected_label`;
 - precision and recall per category;
 - confusion matrix;
-- every misclassified ticket with text, expected, predicted, confidence, reason;
-- how confidence lines up with correctness (accuracy above/below the threshold, how many flagged);
-- total cost (sum of `total_cost_usd`, notional list price on a subscription), tokens and wall time.
+- every misclassified ticket (wrong against `label` or `corrected_label`) with masked text, both labels, predicted, confidence, reason;
+- how confidence lines up with correctness (accuracy of flagged vs not-flagged tickets, how many flagged);
+- total cost (sum of `total_cost_usd` over every attempt, retries and failed tickets included; notional list price on a subscription), tokens and wall time.
+
+Precision/recall, the confusion matrix and the flagged split are measured against `corrected_label`.
+A ticket whose classification fails counts as wrong and flagged, and shows as `failed` in the confusion matrix.
+It reuses `predict`'s classification path and parallel pool.
 
 Written to `results/eval_report.md` and `results/eval_predictions.csv`.
 Metrics are computed by hand, no sklearn.
